@@ -8,9 +8,7 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.0"
-      - key: AMADEUS_CLIENT_ID
-        sync: false
-      - key: AMADEUS_CLIENT_SECRET
+      - key: KIWI_API_KEY
         sync: false
       - key: SERPAPI_KEY
         sync: false

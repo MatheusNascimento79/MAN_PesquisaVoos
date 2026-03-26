@@ -2,8 +2,8 @@
 Flight Search Agent - searches multiple sources for flight offers.
 
 Supported sources:
-1. Amadeus API (primary) - Official airline data
-2. SerpAPI Google Flights (secondary) - Google Flights scraping
+1. Kiwi.com Tequila API (primary) - Free, comprehensive flight data
+2. SerpAPI Google Flights (secondary) - Google Flights data
 """
 
 import hashlib
@@ -23,28 +23,28 @@ logger = logging.getLogger(__name__)
 
 # Airline confidence ratings
 AIRLINE_CONFIDENCE = {
-    "LATAM": "Alto", "LA": "Alto", "JJ": "Alto",
+    "LATAM": "Alto", "LA": "Alto", "JJ": "Alto", "LATAM Airlines": "Alto",
     "Air France": "Alto", "AF": "Alto",
     "KLM": "Alto", "KL": "Alto",
     "Lufthansa": "Alto", "LH": "Alto",
     "British Airways": "Alto", "BA": "Alto",
-    "TAP": "Alto", "TP": "Alto",
+    "TAP": "Alto", "TP": "Alto", "TAP Portugal": "Alto",
     "Iberia": "Alto", "IB": "Alto",
-    "Alitalia": "Alto", "AZ": "Alto",
-    "ITA Airways": "Alto",
-    "Swiss": "Alto", "LX": "Alto",
+    "ITA Airways": "Alto", "AZ": "Alto",
+    "Swiss": "Alto", "LX": "Alto", "SWISS": "Alto",
     "Emirates": "Alto", "EK": "Alto",
     "Turkish Airlines": "Alto", "TK": "Alto",
     "Ethiopian Airlines": "Médio", "ET": "Médio",
     "Royal Air Maroc": "Médio", "AT": "Médio",
     "Copa Airlines": "Médio", "CM": "Médio",
     "Avianca": "Médio", "AV": "Médio",
-    "GOL": "Médio", "G3": "Médio",
+    "GOL": "Médio", "G3": "Médio", "Gol": "Médio",
     "Azul": "Médio", "AD": "Médio",
 }
 
 SELLER_CONFIDENCE = {
     "airline_direct": "Alto",
+    "Kiwi.com": "Alto", "kiwi.com": "Alto",
     "Decolar": "Alto", "decolar.com": "Alto",
     "Kayak": "Alto", "Google Flights": "Alto",
     "Skyscanner": "Alto", "Momondo": "Alto",
@@ -97,7 +97,6 @@ def generate_date_combinations(config):
     dep_date = date.fromisoformat(config["departure_date"])
     ret_date = date.fromisoformat(config["return_date"])
     flex = config.get("flexibility_days", 3)
-    trip_days = (ret_date - dep_date).days
 
     combos = []
     for d_offset in range(-flex, flex + 1):
@@ -110,82 +109,69 @@ def generate_date_combinations(config):
     return combos
 
 
-# ─── Amadeus Source ───────────────────────────────────────────────
+def parse_duration(iso_duration):
+    """Parse ISO 8601 duration like PT12H30M to minutes."""
+    if not iso_duration:
+        return None
+    total = 0
+    iso_duration = iso_duration.replace("PT", "").replace("P", "")
+    if "D" in iso_duration:
+        parts = iso_duration.split("D")
+        total += int(parts[0]) * 1440
+        iso_duration = parts[1] if len(parts) > 1 else ""
+    if "H" in iso_duration:
+        parts = iso_duration.split("H")
+        total += int(parts[0]) * 60
+        iso_duration = parts[1] if len(parts) > 1 else ""
+    if "M" in iso_duration:
+        total += int(iso_duration.replace("M", ""))
+    return total if total > 0 else None
 
-class AmadeusSource:
+
+# ─── Kiwi.com Tequila API Source ─────────────────────────────────
+
+class KiwiSource:
+    """
+    Kiwi.com Tequila API - free tier with generous limits.
+    Register at: https://tequila.kiwi.com/
+    """
+
+    BASE_URL = "https://api.tequila.kiwi.com"
+
     def __init__(self):
-        self.client_id = os.environ.get("AMADEUS_CLIENT_ID", "")
-        self.client_secret = os.environ.get("AMADEUS_CLIENT_SECRET", "")
-        self.token = None
-        self.base_url = "https://test.api.amadeus.com"  # Use production when ready
+        self.api_key = os.environ.get("KIWI_API_KEY", "")
 
     @property
     def available(self):
-        return bool(self.client_id and self.client_secret)
-
-    def authenticate(self):
-        resp = requests.post(
-            f"{self.base_url}/v1/security/oauth2/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        self.token = resp.json()["access_token"]
+        return bool(self.api_key)
 
     def search_flights(self, config, dep_date, ret_date):
-        if not self.token:
-            self.authenticate()
-
-        origin_airports = [a.strip() for a in config["origin_airports"].split(",")]
-        dest_airports = [a.strip() for a in config["destination_airports"].split(",")]
-        ret_origins = [a.strip() for a in config["return_origin_airports"].split(",")]
-        ret_dests = [a.strip() for a in config["return_destination_airports"].split(",")]
+        origin_airports = config["origin_airports"].replace(",", " ")
+        dest_airports = config["destination_airports"].replace(",", " ")
+        ret_origins = config["return_origin_airports"].replace(",", " ")
+        ret_dests = config["return_destination_airports"].replace(",", " ")
         passengers = config.get("passengers", 4)
+        max_stops = config.get("max_stops", 1)
+
+        headers = {"apikey": self.api_key}
+
+        # Kiwi supports multi-city natively via /v2/search
+        # We search outbound and inbound separately for flexibility
+        outbound_results = self._search_oneway(
+            origin_airports, dest_airports, dep_date, passengers, max_stops, headers
+        )
+        inbound_results = self._search_oneway(
+            ret_origins, ret_dests, dep_date_str=ret_date,
+            passengers=passengers, max_stops=max_stops, headers=headers
+        )
 
         offers = []
-
-        for orig in origin_airports:
-            for dest in dest_airports:
-                for ret_orig in ret_origins:
-                    for ret_dest in ret_dests:
-                        try:
-                            results = self._search_pair(
-                                orig, dest, ret_orig, ret_dest,
-                                dep_date, ret_date, passengers, config
-                            )
-                            offers.extend(results)
-                        except Exception as e:
-                            logger.warning(
-                                f"Amadeus search {orig}->{dest}, {ret_orig}->{ret_dest}: {e}"
-                            )
-        return offers
-
-    def _search_pair(self, orig, dest, ret_orig, ret_dest, dep_date, ret_date,
-                     passengers, config):
-        headers = {"Authorization": f"Bearer {self.token}"}
-
-        # Build multi-city search with flight-offers
-        # Amadeus doesn't directly support multi-city in the simple endpoint,
-        # so we search outbound and inbound separately and combine
-        outbound_offers = self._search_oneway(
-            orig, dest, dep_date, passengers, config, headers
-        )
-        inbound_offers = self._search_oneway(
-            ret_orig, ret_dest, ret_date, passengers, config, headers
-        )
-
-        combined = []
-        for out in outbound_offers:
-            for inb in inbound_offers:
+        for out in outbound_results:
+            for inb in inbound_results:
+                total_price = round(out["price"] + inb["price"], 2)
                 offer = {
-                    "price_total": round(out["price"] + inb["price"], 2),
-                    "price_per_person": round(
-                        (out["price"] + inb["price"]) / passengers, 2
-                    ),
+                    "price_total": total_price,
+                    "price_per_person": round(total_price / passengers, 2),
                     "currency": out.get("currency", "BRL"),
                     "outbound_date": out["date"],
                     "outbound_time": out.get("time"),
@@ -208,112 +194,123 @@ class AmadeusSource:
                     "inbound_duration_minutes": inb.get("duration"),
                     "inbound_airlines": inb.get("airlines"),
                     "operating_airline": out.get("airlines", ""),
-                    "seller": "Amadeus/Companhia Aérea",
-                    "booking_url": "",
+                    "seller": "Kiwi.com",
+                    "booking_url": out.get("booking_url", ""),
                     "baggage_info": out.get("baggage"),
                     "fare_rules": None,
-                    "source": "Amadeus API",
+                    "source": "Kiwi.com Tequila API",
                 }
                 offer["confidence_level"] = get_confidence(
-                    offer["operating_airline"], "airline_direct"
+                    offer["operating_airline"], "Kiwi.com"
                 )
                 offer["offer_hash"] = generate_offer_hash(offer)
-                combined.append(offer)
-        return combined
+                offers.append(offer)
 
-    def _search_oneway(self, origin, destination, dep_date, passengers, config, headers):
+        return offers
+
+    def _search_oneway(self, fly_from, fly_to, dep_date_str, passengers,
+                       max_stops, headers):
+        # Kiwi uses DD/MM/YYYY format
+        dep_date = date.fromisoformat(dep_date_str)
+        date_fmt = dep_date.strftime("%d/%m/%Y")
+
         params = {
-            "originLocationCode": origin,
-            "destinationLocationCode": destination,
-            "departureDate": dep_date,
+            "fly_from": fly_from,
+            "fly_to": fly_to,
+            "date_from": date_fmt,
+            "date_to": date_fmt,
             "adults": passengers,
-            "travelClass": config.get("cabin_class", "ECONOMY"),
-            "nonStop": "false",
-            "max": 15,
-            "currencyCode": "BRL",
+            "selected_cabins": "M",  # Economy
+            "curr": "BRL",
+            "locale": "pt",
+            "max_stopovers": max_stops,
+            "limit": 20,
+            "sort": "price",
+            "one_for_city": 0,
+            "flight_type": "oneway",
         }
 
-        resp = requests.get(
-            f"{self.base_url}/v2/shopping/flight-offers",
-            headers=headers, params=params, timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        try:
+            resp = requests.get(
+                f"{self.BASE_URL}/v2/search",
+                headers=headers, params=params, timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.exceptions.HTTPError as e:
+            logger.warning(f"Kiwi API error: {e}")
+            return []
 
         results = []
-        for flight in data.get("data", []):
-            for itinerary in flight.get("itineraries", []):
-                segments = itinerary.get("segments", [])
-                if not segments:
-                    continue
+        for item in data.get("data", []):
+            routes = item.get("route", [])
+            if not routes:
+                continue
 
-                stops = len(segments) - 1
-                if stops > config.get("max_stops", 1):
-                    continue
+            stops = len(routes) - 1
+            if stops > max_stops:
+                continue
 
-                connections = []
-                for seg in segments[:-1]:
-                    arr_code = seg.get("arrival", {}).get("iataCode", "")
-                    connections.append(arr_code)
+            # Check connections for US airports
+            connections = []
+            for r in routes[:-1]:
+                conn_code = r.get("flyTo", "")
+                connections.append(conn_code)
 
-                conn_str = ",".join(connections)
-                if has_us_connection(conn_str):
-                    continue
+            conn_str = ",".join(connections)
+            if has_us_connection(conn_str):
+                continue
 
-                first_seg = segments[0]
-                last_seg = segments[-1]
-                dep_info = first_seg.get("departure", {})
-                arr_info = last_seg.get("arrival", {})
+            first_route = routes[0]
+            last_route = routes[-1]
 
-                dep_dt = dep_info.get("at", "")
-                arr_dt = arr_info.get("at", "")
+            dep_utc = item.get("local_departure", "")
+            arr_utc = item.get("local_arrival", "")
 
-                duration_str = itinerary.get("duration", "")
-                duration_min = parse_duration(duration_str)
+            airlines = list({r.get("airline", "") for r in routes})
+            airlines = [a for a in airlines if a]
 
-                airlines = list({
-                    seg.get("operating", {}).get("carrierCode", "")
-                    or seg.get("carrierCode", "")
-                    for seg in segments
-                })
-                airlines = [a for a in airlines if a]
+            # Price from Kiwi is total for all passengers
+            price = float(item.get("price", 0))
 
-                price_data = flight.get("price", {})
-                price = float(price_data.get("grandTotal", 0))
+            duration_sec = item.get("duration", {})
+            if isinstance(duration_sec, dict):
+                dur_total = duration_sec.get("total", 0)
+            else:
+                dur_total = duration_sec
+            duration_min = dur_total // 60 if dur_total else None
 
-                baggage = None
-                traveler_pricings = flight.get("travelerPricings", [])
-                if traveler_pricings:
-                    fare_details = traveler_pricings[0].get(
-                        "fareDetailsBySegment", []
-                    )
-                    if fare_details:
-                        bag_info = fare_details[0].get("includedCheckedBags", {})
-                        if bag_info:
-                            qty = bag_info.get("quantity", 0)
-                            wt = bag_info.get("weight")
-                            unit = bag_info.get("weightUnit", "KG")
-                            if wt:
-                                baggage = f"{qty}x {wt}{unit}"
-                            elif qty:
-                                baggage = f"{qty} mala(s) incluída(s)"
+            # Baggage info
+            baggage = None
+            bags_price = item.get("bags_price", {})
+            baglimit = item.get("baglimit", {})
+            if baglimit:
+                hand = baglimit.get("hand_width") is not None
+                hold_qty = baglimit.get("hold_dimensions_sum", 0)
+                if bags_price and "1" in bags_price:
+                    baggage = f"Despachada: +R${bags_price['1']:.0f}"
+                elif hold_qty:
+                    baggage = "Bagagem de mão incluída"
 
-                results.append({
-                    "origin": dep_info.get("iataCode", origin),
-                    "destination": arr_info.get("iataCode", destination),
-                    "date": dep_dt[:10] if dep_dt else dep_date,
-                    "time": dep_dt[11:16] if len(dep_dt) > 11 else None,
-                    "arrival_date": arr_dt[:10] if arr_dt else None,
-                    "arrival_time": arr_dt[11:16] if len(arr_dt) > 11 else None,
-                    "price": price,
-                    "currency": price_data.get("currency", "BRL"),
-                    "stops": stops,
-                    "connections": conn_str if connections else None,
-                    "duration": duration_min,
-                    "airlines": ",".join(airlines),
-                    "baggage": baggage,
-                })
-                break  # Only first itinerary per offer
+            # Deep link for booking
+            booking_url = item.get("deep_link", "")
+
+            results.append({
+                "origin": first_route.get("flyFrom", ""),
+                "destination": last_route.get("flyTo", ""),
+                "date": dep_utc[:10] if dep_utc else dep_date_str,
+                "time": dep_utc[11:16] if len(dep_utc) > 11 else None,
+                "arrival_date": arr_utc[:10] if arr_utc else None,
+                "arrival_time": arr_utc[11:16] if len(arr_utc) > 11 else None,
+                "price": price,
+                "currency": item.get("currency", "BRL") if item.get("currency") else "BRL",
+                "stops": stops,
+                "connections": conn_str if connections else None,
+                "duration": duration_min,
+                "airlines": ",".join(airlines),
+                "baggage": baggage,
+                "booking_url": booking_url,
+            })
 
         return results
 
@@ -335,8 +332,8 @@ class SerpAPISource:
         passengers = config.get("passengers", 4)
         offers = []
 
-        # SerpAPI Google Flights uses main airport codes
-        for orig in origin_airports[:1]:  # Limit to reduce API calls
+        # SerpAPI Google Flights - limit to main airports to conserve API calls
+        for orig in origin_airports[:1]:
             for dest in dest_airports[:1]:
                 try:
                     outbound = self._search(orig, dest, dep_date, passengers, config)
@@ -356,13 +353,10 @@ class SerpAPISource:
 
                     for out in outbound:
                         for inb in inbound:
+                            total_price = round(out["price"] + inb["price"], 2)
                             offer = {
-                                "price_total": round(
-                                    out["price"] + inb["price"], 2
-                                ),
-                                "price_per_person": round(
-                                    (out["price"] + inb["price"]) / passengers, 2
-                                ),
+                                "price_total": total_price,
+                                "price_per_person": round(total_price / passengers, 2),
                                 "currency": "BRL",
                                 "outbound_date": out["date"],
                                 "outbound_time": out.get("time"),
@@ -457,7 +451,7 @@ class SerpAPISource:
                 "destination": arr_airport.get("id", destination),
                 "date": dep_date,
                 "time": dep_time_raw,
-                "arrival_date": dep_date,  # approximate
+                "arrival_date": dep_date,
                 "arrival_time": arr_time_raw,
                 "price": float(price) if price else 0,
                 "stops": stops,
@@ -467,27 +461,6 @@ class SerpAPISource:
             })
 
         return results
-
-
-# ─── Utilities ────────────────────────────────────────────────────
-
-def parse_duration(iso_duration):
-    """Parse ISO 8601 duration like PT12H30M to minutes."""
-    if not iso_duration:
-        return None
-    total = 0
-    iso_duration = iso_duration.replace("PT", "").replace("P", "")
-    if "D" in iso_duration:
-        parts = iso_duration.split("D")
-        total += int(parts[0]) * 1440
-        iso_duration = parts[1] if len(parts) > 1 else ""
-    if "H" in iso_duration:
-        parts = iso_duration.split("H")
-        total += int(parts[0]) * 60
-        iso_duration = parts[1] if len(parts) > 1 else ""
-    if "M" in iso_duration:
-        total += int(iso_duration.replace("M", ""))
-    return total if total > 0 else None
 
 
 # ─── Main Agent Runner ───────────────────────────────────────────
@@ -506,7 +479,7 @@ def run_search():
     errors = []
 
     # Initialize sources
-    amadeus = AmadeusSource()
+    kiwi = KiwiSource()
     serpapi = SerpAPISource()
 
     # Generate date combinations
@@ -520,16 +493,16 @@ def run_search():
     date_combos = date_combos[:10]
 
     for dep_date, ret_date in date_combos:
-        # Amadeus
-        if amadeus.available:
+        # Kiwi.com Tequila
+        if kiwi.available:
             try:
-                offers = amadeus.search_flights(config, dep_date, ret_date)
+                offers = kiwi.search_flights(config, dep_date, ret_date)
                 all_offers.extend(offers)
-                if "Amadeus" not in sources_used:
-                    sources_used.append("Amadeus")
-                add_log("INFO", f"Amadeus: {len(offers)} ofertas para {dep_date}/{ret_date}")
+                if "Kiwi.com" not in sources_used:
+                    sources_used.append("Kiwi.com")
+                add_log("INFO", f"Kiwi.com: {len(offers)} ofertas para {dep_date}/{ret_date}")
             except Exception as e:
-                err = f"Amadeus error ({dep_date}): {str(e)}"
+                err = f"Kiwi.com error ({dep_date}): {str(e)}"
                 errors.append(err)
                 add_log("ERROR", err)
 
@@ -548,8 +521,8 @@ def run_search():
 
     if not sources_used:
         add_log("WARNING",
-                "Nenhuma fonte de dados configurada. Configure AMADEUS_CLIENT_ID/"
-                "AMADEUS_CLIENT_SECRET ou SERPAPI_KEY nas variáveis de ambiente.")
+                "Nenhuma fonte de dados configurada. Configure KIWI_API_KEY "
+                "ou SERPAPI_KEY nas variáveis de ambiente.")
 
     # Deduplicate
     seen = set()

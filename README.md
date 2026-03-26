@@ -55,11 +55,11 @@ Acesse: http://localhost:5000
 
 ## Fontes de Dados (APIs)
 
-### Amadeus API (Recomendada)
-1. Crie conta gratuita em https://developers.amadeus.com
-2. Crie um app e copie Client ID e Client Secret
-3. Configure `AMADEUS_CLIENT_ID` e `AMADEUS_CLIENT_SECRET`
-4. O plano gratuito (test) oferece dados reais com limite de chamadas
+### Kiwi.com Tequila API (Recomendada)
+1. Acesse https://tequila.kiwi.com e crie uma conta gratuita
+2. Crie uma **Solution** e copie sua **API Key**
+3. Configure `KIWI_API_KEY` nas variáveis de ambiente
+4. Gratuita, sem limite rígido de chamadas para uso pessoal
 
 ### SerpAPI - Google Flights (Opcional)
 1. Crie conta em https://serpapi.com (100 buscas/mês grátis)
@@ -71,7 +71,7 @@ Acesse: http://localhost:5000
 1. Faça push do código para o GitHub
 2. Acesse https://render.com e conecte seu repositório
 3. Crie um novo **Web Service** apontando para o repo
-4. Configure as variáveis de ambiente (Amadeus/SerpAPI keys)
+4. Configure as variáveis de ambiente (KIWI_API_KEY e/ou SERPAPI_KEY)
 5. O Render detectará o `render.yaml` automaticamente
 6. Deploy automático a cada push
 
@@ -104,8 +104,7 @@ Acesse: http://localhost:5000
 
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
-| `AMADEUS_CLIENT_ID` | Sim* | Client ID do Amadeus |
-| `AMADEUS_CLIENT_SECRET` | Sim* | Client Secret do Amadeus |
+| `KIWI_API_KEY` | Sim* | API key do Kiwi.com Tequila |
 | `SERPAPI_KEY` | Não | API key do SerpAPI |
 | `SECRET_KEY` | Não | Chave secreta Flask |
 | `SEARCH_HOUR` | Não | Hora da busca diária (padrão: 6) |
@@ -113,4 +112,4 @@ Acesse: http://localhost:5000
 | `DB_PATH` | Não | Caminho do banco SQLite |
 | `PORT` | Não | Porta do servidor (padrão: 5000) |
 
-*Pelo menos uma fonte (Amadeus ou SerpAPI) deve estar configurada.
+*Pelo menos uma fonte (Kiwi.com ou SerpAPI) deve estar configurada.
