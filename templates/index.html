@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PesquisaVoos - Monitor de Passagens Aéreas</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+    <div class="header-inner">
+        <h1>PesquisaVoos</h1>
+        <div class="header-meta">
+            <span><span class="status-dot ok" id="status-dot"></span> Última atualização: <span id="last-update">--</span></span>
+            <button class="btn btn-primary btn-sm" id="btn-refresh">Atualizar</button>
+            <button class="btn btn-outline btn-sm" id="btn-config-toggle">Configurar Viagem</button>
+        </div>
+    </div>
+</header>
+
+<main class="container">
+
+    <!-- Config Panel -->
+    <section class="config-panel" id="config-panel">
+        <h2>Configuração da Viagem</h2>
+        <div class="config-grid">
+            <div class="control-group">
+                <label>Aeroportos de Origem (ida)</label>
+                <input type="text" id="config-origin" placeholder="GRU,CGH,VCP">
+            </div>
+            <div class="control-group">
+                <label>Aeroportos de Destino (ida)</label>
+                <input type="text" id="config-destination" placeholder="CDG,ORY">
+            </div>
+            <div class="control-group">
+                <label>Aeroportos de Origem (volta)</label>
+                <input type="text" id="config-return-origin" placeholder="FCO,CIA">
+            </div>
+            <div class="control-group">
+                <label>Data de Ida</label>
+                <input type="date" id="config-departure">
+            </div>
+            <div class="control-group">
+                <label>Data de Volta</label>
+                <input type="date" id="config-return">
+            </div>
+            <div class="control-group">
+                <label>Passageiros</label>
+                <input type="number" id="config-passengers" min="1" max="9" value="4">
+            </div>
+            <div class="control-group">
+                <label>Flexibilidade (dias)</label>
+                <input type="number" id="config-flexibility" min="0" max="7" value="3">
+            </div>
+        </div>
+        <div class="btn-group">
+            <button class="btn btn-primary" id="btn-save-config">Salvar</button>
+            <button class="btn btn-success" id="btn-new-search">Salvar e Buscar</button>
+        </div>
+    </section>
+
+    <!-- Summary -->
+    <section class="summary">
+        <div class="summary-card green">
+            <div class="label">Melhor Preço</div>
+            <div class="value" id="summary-best-price">--</div>
+            <div class="detail" id="summary-best-price-detail">--</div>
+        </div>
+        <div class="summary-card">
+            <div class="label">Melhor Custo-Benefício</div>
+            <div class="value" id="summary-best-value">--</div>
+            <div class="detail" id="summary-best-value-detail">--</div>
+        </div>
+        <div class="summary-card">
+            <div class="label">Mais Confiável</div>
+            <div class="value" id="summary-reliable">--</div>
+            <div class="detail" id="summary-reliable-detail">--</div>
+        </div>
+        <div class="summary-card yellow">
+            <div class="label">Tendência de Preço</div>
+            <div class="value" id="summary-trend">--</div>
+            <div class="detail" id="summary-trend-detail">--</div>
+        </div>
+    </section>
+
+    <!-- Price History Chart -->
+    <section class="chart-section">
+        <h2>Histórico de Preços</h2>
+        <div class="chart-container">
+            <canvas id="price-chart"></canvas>
+        </div>
+    </section>
+
+    <!-- Filters -->
+    <section class="controls">
+        <div class="controls-header">
+            <h2>Ofertas de Voos</h2>
+            <span class="offers-count" id="offers-count"></span>
+        </div>
+        <div class="controls-grid">
+            <div class="control-group">
+                <label>Ordenar por</label>
+                <select id="filter-sort">
+                    <option value="price">Menor Preço</option>
+                    <option value="duration">Menor Duração</option>
+                    <option value="stops">Menos Paradas</option>
+                    <option value="confidence">Maior Confiança</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>Preço Máximo (total)</label>
+                <input type="number" id="filter-max-price" placeholder="Ex: 20000" step="500">
+            </div>
+            <div class="control-group">
+                <label>Companhia Aérea</label>
+                <input type="text" id="filter-airline" placeholder="Ex: LATAM">
+            </div>
+            <div class="control-group">
+                <label>Aeroporto de Saída</label>
+                <select id="filter-airport">
+                    <option value="">Todos</option>
+                    <option value="GRU">GRU - Guarulhos</option>
+                    <option value="CGH">CGH - Congonhas</option>
+                    <option value="VCP">VCP - Campinas</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>Máx. Paradas</label>
+                <select id="filter-stops">
+                    <option value="">Qualquer</option>
+                    <option value="0">Direto</option>
+                    <option value="1">Até 1</option>
+                </select>
+            </div>
+            <div class="control-group" style="display:flex;align-items:flex-end;">
+                <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;">
+                    <input type="checkbox" id="filter-confidence"> Ocultar baixa confiança
+                </label>
+            </div>
+        </div>
+    </section>
+
+    <!-- Offers List -->
+    <section class="offers-list" id="offers-list">
+        <div class="empty-state">
+            <h3>Carregando ofertas...</h3>
+            <span class="loading-spinner" style="margin-top:1rem;"></span>
+        </div>
+    </section>
+
+</main>
+
+<!-- Footer -->
+<footer class="footer">
+    <p><strong>PesquisaVoos</strong> &mdash; Monitor de Passagens Aéreas</p>
+    <p>São Paulo &rarr; Paris | Roma &rarr; São Paulo | 4 adultos | Econômica</p>
+    <p style="margin-top:0.5rem;">
+        Os preços são coletados automaticamente de fontes públicas e podem variar.
+        Sempre confirme o valor final no site da companhia aérea ou agência antes de comprar.
+        Este sistema não realiza vendas nem reservas.
+    </p>
+    <p style="margin-top:0.5rem;">Dados atualizados diariamente às 06:00 (horário de Brasília).</p>
+</footer>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
