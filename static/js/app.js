@@ -4,6 +4,53 @@ const API = '';
 let currentOffers = [];
 let priceChart = null;
 
+// ─── Airport/City Mapping ────────────────────────────────────────
+const AIRPORT_CITIES = {
+    'GRU': 'São Paulo/Guarulhos',
+    'CGH': 'São Paulo/Congonhas',
+    'VCP': 'Campinas/Viracopos',
+    'CDG': 'Paris/Charles de Gaulle',
+    'ORY': 'Paris/Orly',
+    'FCO': 'Roma/Fiumicino',
+    'CIA': 'Roma/Ciampino',
+    'LIS': 'Lisboa',
+    'MAD': 'Madri',
+    'BCN': 'Barcelona',
+    'FRA': 'Frankfurt',
+    'MUC': 'Munique',
+    'AMS': 'Amsterdã',
+    'LHR': 'Londres/Heathrow',
+    'LGW': 'Londres/Gatwick',
+    'IST': 'Istambul',
+    'ZRH': 'Zurique',
+    'MXP': 'Milão/Malpensa',
+    'ADD': 'Adis Abeba',
+    'CMN': 'Casablanca',
+    'DOH': 'Doha',
+    'DXB': 'Dubai',
+    'BOG': 'Bogotá',
+    'PTY': 'Cidade do Panamá',
+    'SCL': 'Santiago',
+    'EZE': 'Buenos Aires',
+    'MVD': 'Montevidéu',
+    'LIM': 'Lima',
+};
+
+function airportLabel(code) {
+    if (!code) return '--';
+    const city = AIRPORT_CITIES[code];
+    return city ? `${city} (${code})` : code;
+}
+
+function airportShort(code) {
+    if (!code) return '--';
+    const city = AIRPORT_CITIES[code];
+    if (!city) return code;
+    // Return just the city part before '/'
+    const short = city.split('/')[0];
+    return `${short} (${code})`;
+}
+
 // ─── Init ────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     loadStatus();
@@ -62,7 +109,6 @@ async function loadStatus() {
                 dot.className = 'status-dot running';
                 el.textContent = 'Busca em andamento...';
                 document.getElementById('btn-refresh').disabled = true;
-                // Poll more frequently while running
                 setTimeout(() => { loadStatus(); loadOffers(); }, 5000);
             }
         } else {
@@ -150,20 +196,20 @@ function renderOfferCard(o, index) {
                 <div class="offer-route">
                     <span class="route-label">Ida</span>
                     <span class="route-time">${o.outbound_time || '--:--'}</span>
-                    <span class="route-airports">${o.outbound_origin}</span>
+                    <span class="route-airports">${airportShort(o.outbound_origin)}</span>
                     <span class="route-arrow">&rarr;</span>
                     <span class="route-time">${o.outbound_arrival_time || '--:--'}</span>
-                    <span class="route-airports">${o.outbound_destination}</span>
+                    <span class="route-airports">${airportShort(o.outbound_destination)}</span>
                     <span class="route-stops">${o.outbound_stops === 0 ? 'Direto' : o.outbound_stops + ' parada(s)'}</span>
                     <span class="route-meta">${formatDuration(o.outbound_duration_minutes)}</span>
                 </div>
                 <div class="offer-route">
                     <span class="route-label">Volta</span>
                     <span class="route-time">${o.inbound_time || '--:--'}</span>
-                    <span class="route-airports">${o.inbound_origin}</span>
+                    <span class="route-airports">${airportShort(o.inbound_origin)}</span>
                     <span class="route-arrow">&rarr;</span>
                     <span class="route-time">${o.inbound_arrival_time || '--:--'}</span>
-                    <span class="route-airports">${o.inbound_destination}</span>
+                    <span class="route-airports">${airportShort(o.inbound_destination)}</span>
                     <span class="route-stops">${o.inbound_stops === 0 ? 'Direto' : o.inbound_stops + ' parada(s)'}</span>
                     <span class="route-meta">${formatDuration(o.inbound_duration_minutes)}</span>
                 </div>
@@ -180,21 +226,21 @@ function renderOfferCard(o, index) {
                 <span>${o.operating_airline || 'N/A'}</span>
                 <span>via ${o.seller || o.source || 'N/A'}</span>
                 <span class="confidence ${confClass}"><span class="conf-dot"></span> ${o.confidence_level || 'Médio'}</span>
-                <span>${o.outbound_date} &mdash; ${o.inbound_date}</span>
+                <span>${formatDate(o.outbound_date)} &mdash; ${formatDate(o.inbound_date)}</span>
             </div>
             ${o.booking_url ? `<a href="${o.booking_url}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Ver Oferta</a>` : ''}
         </div>
         <div class="offer-details" id="details-${index}">
             <div class="details-grid">
-                <div class="detail-item"><label>Aeroporto Ida</label><span>${o.outbound_origin} &rarr; ${o.outbound_destination}</span></div>
-                <div class="detail-item"><label>Data/Hora Ida</label><span>${o.outbound_date} ${o.outbound_time || ''}</span></div>
-                <div class="detail-item"><label>Chegada Ida</label><span>${o.outbound_arrival_date || ''} ${o.outbound_arrival_time || ''}</span></div>
+                <div class="detail-item"><label>Rota Ida</label><span>${airportLabel(o.outbound_origin)} &rarr; ${airportLabel(o.outbound_destination)}</span></div>
+                <div class="detail-item"><label>Data/Hora Ida</label><span>${formatDate(o.outbound_date)} ${o.outbound_time || ''}</span></div>
+                <div class="detail-item"><label>Chegada Ida</label><span>${formatDate(o.outbound_arrival_date)} ${o.outbound_arrival_time || ''}</span></div>
                 <div class="detail-item"><label>Duração Ida</label><span>${formatDuration(o.outbound_duration_minutes)}</span></div>
                 <div class="detail-item"><label>Paradas Ida</label><span>${o.outbound_stops} ${o.outbound_connections ? '(' + o.outbound_connections + ')' : ''}</span></div>
                 <div class="detail-item"><label>Cias. Ida</label><span>${o.outbound_airlines || 'N/A'}</span></div>
-                <div class="detail-item"><label>Aeroporto Volta</label><span>${o.inbound_origin} &rarr; ${o.inbound_destination}</span></div>
-                <div class="detail-item"><label>Data/Hora Volta</label><span>${o.inbound_date} ${o.inbound_time || ''}</span></div>
-                <div class="detail-item"><label>Chegada Volta</label><span>${o.inbound_arrival_date || ''} ${o.inbound_arrival_time || ''}</span></div>
+                <div class="detail-item"><label>Rota Volta</label><span>${airportLabel(o.inbound_origin)} &rarr; ${airportLabel(o.inbound_destination)}</span></div>
+                <div class="detail-item"><label>Data/Hora Volta</label><span>${formatDate(o.inbound_date)} ${o.inbound_time || ''}</span></div>
+                <div class="detail-item"><label>Chegada Volta</label><span>${formatDate(o.inbound_arrival_date)} ${o.inbound_arrival_time || ''}</span></div>
                 <div class="detail-item"><label>Duração Volta</label><span>${formatDuration(o.inbound_duration_minutes)}</span></div>
                 <div class="detail-item"><label>Paradas Volta</label><span>${o.inbound_stops} ${o.inbound_connections ? '(' + o.inbound_connections + ')' : ''}</span></div>
                 <div class="detail-item"><label>Cias. Volta</label><span>${o.inbound_airlines || 'N/A'}</span></div>
@@ -272,8 +318,8 @@ function updateSummary(data) {
         document.getElementById('summary-trend-detail').textContent =
             `Média: ${avgChange > 0 ? '+' : ''}${formatCurrency(avgChange, 'BRL')}`;
     } else {
-        trendEl.textContent = 'Sem dados';
-        document.getElementById('summary-trend-detail').textContent = 'Primeira coleta';
+        trendEl.textContent = 'Primeira coleta';
+        document.getElementById('summary-trend-detail').textContent = 'Tendência disponível a partir da 2ª coleta';
     }
 }
 
@@ -288,13 +334,17 @@ async function loadHistory() {
 }
 
 function renderChart(data) {
-    const ctx = document.getElementById('price-chart');
-    if (!ctx) return;
+    const chartContainer = document.getElementById('chart-container');
+    if (!chartContainer) return;
 
     if (!data || !data.length) {
-        ctx.parentElement.innerHTML = '<p style="text-align:center;color:var(--text-secondary);padding:2rem">Histórico será exibido após a primeira coleta</p>';
+        chartContainer.innerHTML = '<p style="text-align:center;color:var(--text-secondary);padding:2rem">Histórico será exibido a partir da 2ª coleta diária.</p>';
         return;
     }
+
+    // Ensure canvas exists
+    chartContainer.innerHTML = '<canvas id="price-chart"></canvas>';
+    const ctx = document.getElementById('price-chart');
 
     const sorted = [...data].sort((a, b) => a.collected_date.localeCompare(b.collected_date));
     const labels = sorted.map(d => {
@@ -366,8 +416,7 @@ async function showOfferHistory(hash) {
             alert('Nenhum histórico disponível para esta oferta.');
             return;
         }
-        // Simple display in alert for now
-        const lines = data.map(d => `${d.collected_date}: R$ ${d.price_total.toLocaleString('pt-BR')}`);
+        const lines = data.map(d => `${formatDate(d.collected_date)}: R$ ${d.price_total.toLocaleString('pt-BR')}`);
         alert('Histórico de preço:\n\n' + lines.join('\n'));
     } catch (e) {
         console.error(e);
@@ -435,7 +484,6 @@ async function triggerSearch() {
         if (resp.status === 'already_running') {
             alert('Uma busca já está em andamento. Aguarde.');
         }
-        // Poll for completion
         pollSearch();
     } catch (e) {
         alert('Erro ao iniciar busca.');
@@ -479,11 +527,25 @@ function formatDuration(minutes) {
 function formatDateTime(dt) {
     if (!dt) return '--';
     try {
-        const d = new Date(dt + (dt.includes('T') ? '' : 'T00:00:00'));
+        // SQLite returns "2026-03-26 13:25:00", JS needs "T" separator
+        const normalized = dt.replace(' ', 'T');
+        const d = new Date(normalized);
+        if (isNaN(d.getTime())) return dt;
         return d.toLocaleString('pt-BR', {
             day: '2-digit', month: '2-digit', year: 'numeric',
             hour: '2-digit', minute: '2-digit',
         });
+    } catch {
+        return dt;
+    }
+}
+
+function formatDate(dt) {
+    if (!dt) return '--';
+    try {
+        const parts = dt.split('-');
+        if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+        return dt;
     } catch {
         return dt;
     }
