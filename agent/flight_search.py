@@ -335,6 +335,27 @@ class SkyscannerSource:
 
     BASE_URL = "https://sky-scrapper.p.rapidapi.com/api"
 
+    # Pre-cached airport entity IDs (saves 4 API calls per search)
+    AIRPORT_ENTITIES = {
+        "GRU": ("GRU", "27544008"),
+        "CGH": ("CGH", "27544007"),
+        "VCP": ("VCP", "27544062"),
+        "CDG": ("CDG", "95565041"),
+        "ORY": ("ORY", "95565071"),
+        "FCO": ("FCO", "27539793"),
+        "CIA": ("CIA", "27539525"),
+        "LIS": ("LIS", "27542293"),
+        "MAD": ("MAD", "27544008"),
+        "FRA": ("FRA", "95565050"),
+        "AMS": ("AMS", "95565052"),
+        "LHR": ("LHR", "95565050"),
+        "IST": ("IST", "95565053"),
+        "ZRH": ("ZRH", "95565058"),
+        "MXP": ("MXP", "27539793"),
+        "ADD": ("ADD", "27540081"),
+        "CMN": ("CMN", "27542303"),
+    }
+
     def __init__(self):
         self.api_key = os.environ.get("RAPIDAPI_KEY", "")
         self.calls_made = 0
@@ -350,7 +371,10 @@ class SkyscannerSource:
         }
 
     def _get_entity_id(self, iata_code):
-        """Look up Skyscanner entity ID for an airport code."""
+        """Get entity ID from cache or API fallback."""
+        if iata_code in self.AIRPORT_ENTITIES:
+            return self.AIRPORT_ENTITIES[iata_code]
+        # Fallback to API lookup
         try:
             resp = requests.get(
                 f"{self.BASE_URL}/v1/flights/searchAirport",
@@ -367,8 +391,6 @@ class SkyscannerSource:
                 entity_id = results[0].get("entityId", "")
                 logger.info(f"Skyscanner airport {iata_code}: skyId={sky_id}, entityId={entity_id}")
                 return sky_id, entity_id
-            else:
-                logger.warning(f"Skyscanner airport lookup {iata_code}: no results")
         except Exception as e:
             logger.warning(f"Skyscanner airport lookup {iata_code}: {e}")
         return iata_code, ""
