@@ -363,7 +363,12 @@ class SkyscannerSource:
             data = resp.json()
             results = data.get("data", [])
             if results:
-                return results[0].get("skyId", iata_code), results[0].get("entityId", "")
+                sky_id = results[0].get("skyId", iata_code)
+                entity_id = results[0].get("entityId", "")
+                logger.info(f"Skyscanner airport {iata_code}: skyId={sky_id}, entityId={entity_id}")
+                return sky_id, entity_id
+            else:
+                logger.warning(f"Skyscanner airport lookup {iata_code}: no results")
         except Exception as e:
             logger.warning(f"Skyscanner airport lookup {iata_code}: {e}")
         return iata_code, ""
@@ -475,20 +480,40 @@ class SkyscannerSource:
             logger.error(f"Skyscanner search failed: {e}")
             return []
 
-        if not data.get("status"):
-            logger.warning(f"Skyscanner returned no status")
+        # Log response structure for debugging
+        status = data.get("status")
+        top_keys = list(data.keys()) if isinstance(data, dict) else []
+        logger.info(f"Skyscanner response: status={status}, keys={top_keys}")
+
+        # Try to find itineraries in various response structures
+        resp_data = data.get("data", {})
+        if not isinstance(resp_data, dict):
+            logger.warning(f"Skyscanner data is not a dict: {type(resp_data)}")
+            return []
+
+        itineraries = resp_data.get("itineraries", [])
+        if not itineraries:
+            # Try alternative key names
+            itineraries = resp_data.get("results", resp_data.get("flights", []))
+
+        data_keys = list(resp_data.keys()) if isinstance(resp_data, dict) else []
+        logger.info(f"Skyscanner data keys={data_keys}, itineraries={len(itineraries)}")
+
+        if not itineraries:
+            add_log("WARNING", f"Skyscanner: 0 itinerários retornados. "
+                    f"Response keys: {top_keys}, data keys: {data_keys}")
             return []
 
         results = []
-        resp_data = data.get("data", {})
-        itineraries = resp_data.get("itineraries", [])
 
         # Build carriers lookup
         carriers_map = {}
-        for carrier in resp_data.get("carriers", {}).get("marketing", []):
-            carriers_map[carrier.get("id")] = carrier.get("name", "")
-        for carrier in resp_data.get("carriers", {}).get("operating", []):
-            carriers_map[carrier.get("id")] = carrier.get("name", "")
+        carriers_data = resp_data.get("carriers", {})
+        if isinstance(carriers_data, dict):
+            for carrier in carriers_data.get("marketing", []):
+                carriers_map[carrier.get("id")] = carrier.get("name", "")
+            for carrier in carriers_data.get("operating", []):
+                carriers_map[carrier.get("id")] = carrier.get("name", "")
 
         for itin in itineraries[:15]:  # Limit results
             legs = itin.get("legs", [])
