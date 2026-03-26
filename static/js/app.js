@@ -346,8 +346,13 @@ function renderChart(data) {
     chartContainer.innerHTML = '<canvas id="price-chart"></canvas>';
     const ctx = document.getElementById('price-chart');
 
-    const sorted = [...data].sort((a, b) => a.collected_date.localeCompare(b.collected_date));
+    const sorted = [...data].sort((a, b) =>
+        (a.collected_at || a.collected_date).localeCompare(b.collected_at || b.collected_date)
+    );
     const labels = sorted.map(d => {
+        if (d.collected_at) {
+            return formatDateTimeBR(d.collected_at);
+        }
         const parts = d.collected_date.split('-');
         return `${parts[2]}/${parts[1]}`;
     });
@@ -527,12 +532,29 @@ function formatDuration(minutes) {
 function formatDateTime(dt) {
     if (!dt) return '--';
     try {
-        // SQLite returns "2026-03-26 13:25:00", JS needs "T" separator
-        const normalized = dt.replace(' ', 'T');
+        // SQLite returns "2026-03-26 13:25:00" in UTC, add Z to force UTC parsing
+        const normalized = dt.replace(' ', 'T') + (dt.includes('Z') || dt.includes('+') ? '' : 'Z');
         const d = new Date(normalized);
         if (isNaN(d.getTime())) return dt;
         return d.toLocaleString('pt-BR', {
+            timeZone: 'America/Sao_Paulo',
             day: '2-digit', month: '2-digit', year: 'numeric',
+            hour: '2-digit', minute: '2-digit',
+        });
+    } catch {
+        return dt;
+    }
+}
+
+function formatDateTimeBR(dt) {
+    if (!dt) return '--';
+    try {
+        const normalized = dt.replace(' ', 'T') + (dt.includes('Z') || dt.includes('+') ? '' : 'Z');
+        const d = new Date(normalized);
+        if (isNaN(d.getTime())) return dt;
+        return d.toLocaleString('pt-BR', {
+            timeZone: 'America/Sao_Paulo',
+            day: '2-digit', month: '2-digit',
             hour: '2-digit', minute: '2-digit',
         });
     } catch {

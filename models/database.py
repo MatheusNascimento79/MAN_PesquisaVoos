@@ -99,8 +99,8 @@ def init_db():
             price_total REAL NOT NULL,
             currency TEXT NOT NULL DEFAULT 'BRL',
             collected_date TEXT NOT NULL,
-            source TEXT NOT NULL,
-            UNIQUE(offer_hash, collected_date, source)
+            collected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            source TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS search_logs (
@@ -111,6 +111,47 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
     """)
+
+    # Migrate: add collected_at column if missing (old schema)
+    try:
+        conn.execute("SELECT collected_at FROM price_history LIMIT 1")
+    except Exception:
+        try:
+            conn.execute("ALTER TABLE price_history ADD COLUMN collected_at TEXT NOT NULL DEFAULT (datetime('now'))")
+        except Exception:
+            pass
+
+    # Drop old unique constraint by recreating table if needed
+    # (old schema had UNIQUE on offer_hash, collected_date, source)
+    try:
+        conn.execute("""
+            INSERT INTO price_history (offer_hash, price_total, currency, collected_date, collected_at, source)
+            VALUES ('__test__', 0, 'BRL', '2000-01-01', datetime('now'), 'test')
+        """)
+        conn.execute("""
+            INSERT INTO price_history (offer_hash, price_total, currency, collected_date, collected_at, source)
+            VALUES ('__test__', 0, 'BRL', '2000-01-01', datetime('now'), 'test')
+        """)
+        conn.execute("DELETE FROM price_history WHERE offer_hash = '__test__'")
+    except Exception:
+        # UNIQUE constraint still exists — recreate table
+        conn.executescript("""
+            ALTER TABLE price_history RENAME TO price_history_old;
+            CREATE TABLE price_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                offer_hash TEXT NOT NULL,
+                price_total REAL NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'BRL',
+                collected_date TEXT NOT NULL,
+                collected_at TEXT NOT NULL DEFAULT (datetime('now')),
+                source TEXT NOT NULL
+            );
+            INSERT INTO price_history (offer_hash, price_total, currency, collected_date, collected_at, source)
+                SELECT offer_hash, price_total, currency, collected_date,
+                       COALESCE(collected_at, collected_date || 'T00:00:00'), source
+                FROM price_history_old;
+            DROP TABLE price_history_old;
+        """)
 
     # Insert default config if none exists
     cursor = conn.execute("SELECT COUNT(*) as cnt FROM search_configs")
@@ -242,11 +283,11 @@ def save_offer(run_id, offer):
         offer.get("notes"), price_change, price_change_pct,
     ))
 
-    # Save to price history
+    # Save to price history (one entry per search run)
     today = date.today().isoformat()
     conn.execute("""
-        INSERT OR REPLACE INTO price_history (offer_hash, price_total, currency, collected_date, source)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO price_history (offer_hash, price_total, currency, collected_date, collected_at, source)
+        VALUES (?, ?, ?, ?, datetime('now'), ?)
     """, (
         offer["offer_hash"], offer["price_total"],
         offer.get("currency", "BRL"), today, offer.get("source", ""),
@@ -307,18 +348,20 @@ def get_price_history(offer_hash=None, days=30):
     if offer_hash:
         rows = conn.execute("""
             SELECT * FROM price_history WHERE offer_hash = ?
-            ORDER BY collected_date DESC LIMIT ?
+            ORDER BY collected_at DESC LIMIT ?
         """, (offer_hash, days)).fetchall()
     else:
+        # Group by collected_at (timestamp) to show each search run
         rows = conn.execute("""
-            SELECT collected_date,
+            SELECT collected_at,
+                   collected_date,
                    MIN(price_total) as min_price,
-                   AVG(price_total) as avg_price,
+                   ROUND(AVG(price_total), 2) as avg_price,
                    MAX(price_total) as max_price,
                    COUNT(*) as num_offers
             FROM price_history
-            GROUP BY collected_date
-            ORDER BY collected_date DESC LIMIT ?
+            GROUP BY collected_at
+            ORDER BY collected_at DESC LIMIT ?
         """, (days,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
