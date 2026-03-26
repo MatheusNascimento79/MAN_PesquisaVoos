@@ -1,11 +1,12 @@
 """
-Flight Search Agent - searches Google Flights via SerpAPI.
+Flight Search Agent - searches multiple sources for flight offers.
 
-SerpAPI free tier: 100 searches/month.
-Strategy: 2 API calls per date combo (outbound + inbound).
-With 3 date combos/day = 6 calls/day = ~180/month.
-We limit to 1-2 combos/day for daily auto-search (2-4 calls/day = ~90/month).
-Manual searches use more combos for broader coverage.
+Sources:
+1. SerpAPI Google Flights (primary) - 100 searches/month free
+2. Skyscanner via RapidAPI (secondary) - 50 requests/month free
+
+Both require free registration and provide real flight data
+from airlines and travel agencies worldwide.
 """
 
 import hashlib
@@ -323,6 +324,249 @@ class GoogleFlightsSource:
         return results
 
 
+# ─── Skyscanner via RapidAPI Source ───────────────────────────────
+
+class SkyscannerSource:
+    """
+    Skyscanner flight search via RapidAPI (Sky Scrapper).
+    Free tier: 50 requests/month.
+    Register at: https://rapidapi.com/apiheya/api/sky-scrapper
+    """
+
+    BASE_URL = "https://sky-scrapper.p.rapidapi.com/api"
+
+    def __init__(self):
+        self.api_key = os.environ.get("RAPIDAPI_KEY", "")
+        self.calls_made = 0
+
+    @property
+    def available(self):
+        return bool(self.api_key)
+
+    def _headers(self):
+        return {
+            "X-RapidAPI-Key": self.api_key,
+            "X-RapidAPI-Host": "sky-scrapper.p.rapidapi.com",
+        }
+
+    def _get_entity_id(self, iata_code):
+        """Look up Skyscanner entity ID for an airport code."""
+        try:
+            resp = requests.get(
+                f"{self.BASE_URL}/v1/flights/searchAirport",
+                headers=self._headers(),
+                params={"query": iata_code, "locale": "pt-BR"},
+                timeout=30,
+            )
+            self.calls_made += 1
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("data", [])
+            if results:
+                return results[0].get("skyId", iata_code), results[0].get("entityId", "")
+        except Exception as e:
+            logger.warning(f"Skyscanner airport lookup {iata_code}: {e}")
+        return iata_code, ""
+
+    def search_flights(self, config, dep_date, ret_date):
+        """Search outbound and inbound flights via Skyscanner."""
+        origin_airports = [a.strip() for a in config["origin_airports"].split(",")]
+        dest_airports = [a.strip() for a in config["destination_airports"].split(",")]
+        ret_origins = [a.strip() for a in config["return_origin_airports"].split(",")]
+        ret_dests = [a.strip() for a in config["return_destination_airports"].split(",")]
+        passengers = config.get("passengers", 4)
+        max_stops = config.get("max_stops", 1)
+
+        # Use primary airports only to conserve API calls
+        orig = origin_airports[0]
+        dest = dest_airports[0]
+        ret_orig = ret_origins[0]
+        ret_dest = ret_dests[0] if ret_dests else orig
+
+        # Look up entity IDs
+        orig_sky, orig_entity = self._get_entity_id(orig)
+        dest_sky, dest_entity = self._get_entity_id(dest)
+        ret_orig_sky, ret_orig_entity = self._get_entity_id(ret_orig)
+        ret_dest_sky, ret_dest_entity = self._get_entity_id(ret_dest)
+
+        # Search outbound
+        outbound = self._search_oneway(
+            orig_sky, orig_entity, dest_sky, dest_entity,
+            dep_date, passengers, max_stops
+        )
+        # Search inbound
+        inbound = self._search_oneway(
+            ret_orig_sky, ret_orig_entity, ret_dest_sky, ret_dest_entity,
+            ret_date, passengers, max_stops
+        )
+
+        add_log("DEBUG", f"Skyscanner ida: {len(outbound)} resultados, volta: {len(inbound)} resultados")
+
+        # Combine
+        offers = []
+        for out in outbound:
+            for inb in inbound:
+                total_price = round(out["price"] + inb["price"], 2)
+                offer = {
+                    "price_total": total_price,
+                    "price_per_person": round(total_price / passengers, 2),
+                    "currency": "BRL",
+                    "outbound_date": out["date"],
+                    "outbound_time": out.get("time"),
+                    "outbound_arrival_date": out.get("arrival_date"),
+                    "outbound_arrival_time": out.get("arrival_time"),
+                    "outbound_origin": out["origin"],
+                    "outbound_destination": out["destination"],
+                    "outbound_stops": out.get("stops", 0),
+                    "outbound_connections": out.get("connections"),
+                    "outbound_duration_minutes": out.get("duration"),
+                    "outbound_airlines": out.get("airlines"),
+                    "inbound_date": inb["date"],
+                    "inbound_time": inb.get("time"),
+                    "inbound_arrival_date": inb.get("arrival_date"),
+                    "inbound_arrival_time": inb.get("arrival_time"),
+                    "inbound_origin": inb["origin"],
+                    "inbound_destination": inb["destination"],
+                    "inbound_stops": inb.get("stops", 0),
+                    "inbound_connections": inb.get("connections"),
+                    "inbound_duration_minutes": inb.get("duration"),
+                    "inbound_airlines": inb.get("airlines"),
+                    "operating_airline": out.get("airlines", ""),
+                    "seller": out.get("seller", "Skyscanner"),
+                    "booking_url": out.get("booking_url", ""),
+                    "baggage_info": None,
+                    "fare_rules": None,
+                    "source": "Skyscanner (RapidAPI)",
+                }
+                offer["confidence_level"] = get_confidence(
+                    offer["operating_airline"], "Skyscanner"
+                )
+                offer["offer_hash"] = generate_offer_hash(offer)
+                offers.append(offer)
+
+        return offers
+
+    def _search_oneway(self, orig_sky, orig_entity, dest_sky, dest_entity,
+                       dep_date, passengers, max_stops):
+        """Execute a single one-way search on Skyscanner."""
+        params = {
+            "originSkyId": orig_sky,
+            "destinationSkyId": dest_sky,
+            "originEntityId": orig_entity,
+            "destinationEntityId": dest_entity,
+            "date": dep_date,
+            "adults": passengers,
+            "cabinClass": "economy",
+            "currency": "BRL",
+            "market": "BR",
+            "locale": "pt-BR",
+        }
+
+        try:
+            resp = requests.get(
+                f"{self.BASE_URL}/v2/flights/searchFlightsComplete",
+                headers=self._headers(),
+                params=params, timeout=60,
+            )
+            self.calls_made += 1
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Skyscanner search failed: {e}")
+            return []
+
+        if not data.get("status"):
+            logger.warning(f"Skyscanner returned no status")
+            return []
+
+        results = []
+        resp_data = data.get("data", {})
+        itineraries = resp_data.get("itineraries", [])
+
+        # Build carriers lookup
+        carriers_map = {}
+        for carrier in resp_data.get("carriers", {}).get("marketing", []):
+            carriers_map[carrier.get("id")] = carrier.get("name", "")
+        for carrier in resp_data.get("carriers", {}).get("operating", []):
+            carriers_map[carrier.get("id")] = carrier.get("name", "")
+
+        for itin in itineraries[:15]:  # Limit results
+            legs = itin.get("legs", [])
+            if not legs:
+                continue
+
+            leg = legs[0]
+            segments = leg.get("segments", [])
+            stops = len(segments) - 1
+            if stops > max_stops:
+                continue
+
+            # Check connections
+            connections = []
+            for seg in segments[:-1]:
+                dest_code = seg.get("destination", {}).get("flightPlaceId", "")
+                connections.append(dest_code)
+
+            conn_str = ",".join(connections)
+            if has_us_connection(conn_str):
+                continue
+
+            origin_code = leg.get("origin", {}).get("flightPlaceId", "")
+            dest_code = leg.get("destination", {}).get("flightPlaceId", "")
+
+            dep_dt = leg.get("departure", "")
+            arr_dt = leg.get("arrival", "")
+
+            duration_min = leg.get("durationInMinutes")
+
+            # Airlines from segments
+            airlines = set()
+            for seg in segments:
+                carrier_id = seg.get("marketingCarrier", {}).get("id")
+                if carrier_id and carrier_id in carriers_map:
+                    airlines.add(carriers_map[carrier_id])
+                op_id = seg.get("operatingCarrier", {}).get("id")
+                if op_id and op_id in carriers_map:
+                    airlines.add(carriers_map[op_id])
+            airlines = sorted(airlines)
+
+            # Price - Skyscanner returns per-query price
+            price_data = itin.get("price", {})
+            price_raw = price_data.get("raw", 0)
+            price = float(price_raw) if price_raw else 0
+
+            # Seller info
+            seller = "Skyscanner"
+            pricing_options = itin.get("pricingOptions", [])
+            if pricing_options:
+                agents = pricing_options[0].get("agents", [])
+                if agents:
+                    seller = agents[0].get("name", "Skyscanner")
+
+            # Booking URL
+            booking_url = ""
+            if pricing_options:
+                booking_url = pricing_options[0].get("url", "")
+
+            results.append({
+                "origin": origin_code,
+                "destination": dest_code,
+                "date": dep_dt[:10] if dep_dt else dep_date,
+                "time": dep_dt[11:16] if len(dep_dt) > 11 else None,
+                "arrival_date": arr_dt[:10] if arr_dt else None,
+                "arrival_time": arr_dt[11:16] if len(arr_dt) > 11 else None,
+                "price": price,
+                "stops": stops,
+                "connections": conn_str if connections else None,
+                "duration": duration_min,
+                "airlines": ",".join(airlines),
+                "seller": seller,
+                "booking_url": booking_url,
+            })
+
+        return results
+
+
 # ─── Main Agent Runner ───────────────────────────────────────────
 
 def run_search(is_manual=False):
@@ -344,18 +588,21 @@ def run_search(is_manual=False):
     sources_used = []
     errors = []
 
-    source = GoogleFlightsSource()
+    # Initialize sources
+    google_flights = GoogleFlightsSource()
+    skyscanner = SkyscannerSource()
 
-    if not source.available:
+    if not google_flights.available and not skyscanner.available:
         add_log("WARNING",
-                "SERPAPI_KEY não configurada. Configure a variável de ambiente "
-                "com sua chave do SerpAPI (https://serpapi.com).")
-        finish_search_run(run_id, "error", 0, "", "SERPAPI_KEY não configurada")
+                "Nenhuma API configurada. Configure SERPAPI_KEY e/ou "
+                "RAPIDAPI_KEY nas variáveis de ambiente.")
+        finish_search_run(run_id, "error", 0, "",
+                          "Nenhuma API key configurada")
         return 0
 
     # Generate date combinations
-    # Daily auto: 2 combos (4 API calls) to conserve quota
-    # Manual: up to 5 combos (10 API calls) for broader coverage
+    # Daily auto: 2 combos to conserve quota
+    # Manual: up to 5 combos for broader coverage
     max_combos = 5 if is_manual else 2
     date_combos = generate_date_combinations(config, max_combos=max_combos)
 
@@ -363,20 +610,39 @@ def run_search(is_manual=False):
             f"({'busca manual' if is_manual else 'busca automática'})")
 
     for dep_date, ret_date in date_combos:
-        try:
-            offers = source.search_flights(config, dep_date, ret_date)
-            all_offers.extend(offers)
-            if "Google Flights" not in sources_used:
-                sources_used.append("Google Flights")
-            add_log("INFO",
-                    f"Google Flights: {len(offers)} ofertas para "
-                    f"{dep_date} / {ret_date}")
-        except Exception as e:
-            err = f"Erro na busca ({dep_date}/{ret_date}): {str(e)}"
-            errors.append(err)
-            add_log("ERROR", err)
+        # Google Flights via SerpAPI
+        if google_flights.available:
+            try:
+                offers = google_flights.search_flights(config, dep_date, ret_date)
+                all_offers.extend(offers)
+                if "Google Flights" not in sources_used:
+                    sources_used.append("Google Flights")
+                add_log("INFO",
+                        f"Google Flights: {len(offers)} ofertas para "
+                        f"{dep_date} / {ret_date}")
+            except Exception as e:
+                err = f"Google Flights erro ({dep_date}/{ret_date}): {str(e)}"
+                errors.append(err)
+                add_log("ERROR", err)
 
-    add_log("INFO", f"Total de chamadas à API: {source.calls_made}")
+        # Skyscanner via RapidAPI (only for first date combo to conserve quota)
+        if skyscanner.available and dep_date == date_combos[0][0]:
+            try:
+                offers = skyscanner.search_flights(config, dep_date, ret_date)
+                all_offers.extend(offers)
+                if "Skyscanner" not in sources_used:
+                    sources_used.append("Skyscanner")
+                add_log("INFO",
+                        f"Skyscanner: {len(offers)} ofertas para "
+                        f"{dep_date} / {ret_date}")
+            except Exception as e:
+                err = f"Skyscanner erro ({dep_date}/{ret_date}): {str(e)}"
+                errors.append(err)
+                add_log("ERROR", err)
+
+    total_calls = google_flights.calls_made + skyscanner.calls_made
+    add_log("INFO", f"Total de chamadas às APIs: {total_calls} "
+            f"(Google: {google_flights.calls_made}, Skyscanner: {skyscanner.calls_made})")
 
     # Deduplicate
     seen = set()

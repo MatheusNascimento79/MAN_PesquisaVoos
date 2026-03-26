@@ -10,6 +10,8 @@ services:
         value: "3.11.0"
       - key: SERPAPI_KEY
         sync: false
+      - key: RAPIDAPI_KEY
+        sync: false
       - key: SECRET_KEY
         generateValue: true
       - key: ENABLE_SCHEDULER

@@ -52,28 +52,28 @@ python app.py
 
 Acesse: http://localhost:5000
 
-## Fonte de Dados: SerpAPI (Google Flights)
+## Fontes de Dados
 
-O sistema usa o **SerpAPI** para buscar dados do Google Flights.
-
-### Como obter a API Key (gratuita):
+### 1. SerpAPI - Google Flights (recomendada)
 1. Acesse https://serpapi.com e crie uma conta
-2. O plano gratuito oferece **100 buscas/mês**
+2. Plano gratuito: **100 buscas/mês**
 3. Copie sua API Key do dashboard
-4. Configure `SERPAPI_KEY` nas variáveis de ambiente
+4. Configure `SERPAPI_KEY`
 
-### Consumo de API otimizado:
-- **Busca automática diária:** ~4 chamadas/dia (2 combos de datas × 2 trechos)
-- **Busca manual (botão):** ~10 chamadas (5 combos × 2 trechos)
-- **Estimativa mensal:** ~120-150 chamadas com uso moderado
-- O plano gratuito (100/mês) suporta bem o uso automático diário
+### 2. Skyscanner via RapidAPI (complementar)
+1. Acesse https://rapidapi.com/apiheya/api/sky-scrapper
+2. Clique em **"Subscribe to Test"** (plano gratuito: 50 req/mês)
+3. Copie sua RapidAPI Key
+4. Configure `RAPIDAPI_KEY`
+
+> Configure pelo menos uma. Com as duas, o sistema cruza resultados de fontes diferentes.
 
 ## Deploy no Render (Gratuito)
 
 1. Faça push do código para o GitHub
 2. Acesse https://render.com e conecte seu repositório
 3. Crie um novo **Web Service** apontando para o repo
-4. Configure a variável de ambiente `SERPAPI_KEY`
+4. Configure as variáveis `SERPAPI_KEY` e/ou `RAPIDAPI_KEY`
 5. O Render detectará o `render.yaml` automaticamente
 6. Deploy automático a cada push
 
@@ -106,7 +106,8 @@ O sistema usa o **SerpAPI** para buscar dados do Google Flights.
 
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
-| `SERPAPI_KEY` | Sim | API key do SerpAPI (Google Flights) |
+| `SERPAPI_KEY` | Sim* | API key do SerpAPI (Google Flights) |
+| `RAPIDAPI_KEY` | Não | API key do RapidAPI (Skyscanner) |
 | `SECRET_KEY` | Não | Chave secreta Flask |
 | `SEARCH_HOUR` | Não | Hora da busca diária (padrão: 6) |
 | `ENABLE_SCHEDULER` | Não | Ativar agendamento (padrão: true) |
