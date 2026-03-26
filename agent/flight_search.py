@@ -1,9 +1,11 @@
 """
-Flight Search Agent - searches multiple sources for flight offers.
+Flight Search Agent - searches Google Flights via SerpAPI.
 
-Supported sources:
-1. Kiwi.com Tequila API (primary) - Free, comprehensive flight data
-2. SerpAPI Google Flights (secondary) - Google Flights data
+SerpAPI free tier: 100 searches/month.
+Strategy: 2 API calls per date combo (outbound + inbound).
+With 3 date combos/day = 6 calls/day = ~180/month.
+We limit to 1-2 combos/day for daily auto-search (2-4 calls/day = ~90/month).
+Manual searches use more combos for broader coverage.
 """
 
 import hashlib
@@ -21,36 +23,40 @@ from models.database import (
 
 logger = logging.getLogger(__name__)
 
-# Airline confidence ratings
+# ─── Confidence Ratings ──────────────────────────────────────────
+
 AIRLINE_CONFIDENCE = {
-    "LATAM": "Alto", "LA": "Alto", "JJ": "Alto", "LATAM Airlines": "Alto",
-    "Air France": "Alto", "AF": "Alto",
-    "KLM": "Alto", "KL": "Alto",
-    "Lufthansa": "Alto", "LH": "Alto",
-    "British Airways": "Alto", "BA": "Alto",
-    "TAP": "Alto", "TP": "Alto", "TAP Portugal": "Alto",
-    "Iberia": "Alto", "IB": "Alto",
-    "ITA Airways": "Alto", "AZ": "Alto",
-    "Swiss": "Alto", "LX": "Alto", "SWISS": "Alto",
-    "Emirates": "Alto", "EK": "Alto",
-    "Turkish Airlines": "Alto", "TK": "Alto",
-    "Ethiopian Airlines": "Médio", "ET": "Médio",
-    "Royal Air Maroc": "Médio", "AT": "Médio",
-    "Copa Airlines": "Médio", "CM": "Médio",
-    "Avianca": "Médio", "AV": "Médio",
-    "GOL": "Médio", "G3": "Médio", "Gol": "Médio",
-    "Azul": "Médio", "AD": "Médio",
+    "LATAM": "Alto", "LATAM Airlines": "Alto",
+    "Air France": "Alto",
+    "KLM": "Alto", "KLM Royal Dutch Airlines": "Alto",
+    "Lufthansa": "Alto",
+    "British Airways": "Alto",
+    "TAP": "Alto", "TAP Air Portugal": "Alto", "TAP Portugal": "Alto",
+    "Iberia": "Alto",
+    "ITA Airways": "Alto",
+    "Swiss": "Alto", "SWISS": "Alto",
+    "Emirates": "Alto",
+    "Turkish Airlines": "Alto",
+    "Ethiopian Airlines": "Médio",
+    "Royal Air Maroc": "Médio",
+    "Copa Airlines": "Médio",
+    "Avianca": "Médio",
+    "GOL": "Médio", "Gol": "Médio", "Gol Linhas Aéreas": "Médio",
+    "Azul": "Médio", "Azul Brazilian Airlines": "Médio",
+    "Condor": "Médio",
+    "Norwegian": "Médio",
+    "easyJet": "Baixo",
+    "Ryanair": "Baixo",
 }
 
 SELLER_CONFIDENCE = {
-    "airline_direct": "Alto",
-    "Kiwi.com": "Alto", "kiwi.com": "Alto",
+    "Google Flights": "Alto",
     "Decolar": "Alto", "decolar.com": "Alto",
-    "Kayak": "Alto", "Google Flights": "Alto",
-    "Skyscanner": "Alto", "Momondo": "Alto",
+    "Kayak": "Alto", "Skyscanner": "Alto", "Momondo": "Alto",
     "Expedia": "Alto", "CVC": "Alto",
+    "Kiwi.com": "Alto",
     "123milhas": "Baixo",
-    "MaxMilhas": "Médio", "Submarino Viagens": "Médio",
+    "MaxMilhas": "Médio",
 }
 
 US_AIRPORT_CODES = {
@@ -62,6 +68,8 @@ US_AIRPORT_CODES = {
     "IND", "CMH", "MCI", "SAT", "SNA", "DAL", "HOU",
 }
 
+
+# ─── Helpers ─────────────────────────────────────────────────────
 
 def generate_offer_hash(offer):
     key = (
@@ -93,86 +101,86 @@ def get_confidence(airline, seller):
     return "Baixo"
 
 
-def generate_date_combinations(config):
+def generate_date_combinations(config, max_combos=None):
+    """Generate date combinations respecting flexibility and ~14 day trip."""
     dep_date = date.fromisoformat(config["departure_date"])
     ret_date = date.fromisoformat(config["return_date"])
     flex = config.get("flexibility_days", 3)
 
     combos = []
+    # Always include the base dates first
+    combos.append((dep_date.isoformat(), ret_date.isoformat()))
+
     for d_offset in range(-flex, flex + 1):
         dep = dep_date + timedelta(days=d_offset)
         for r_offset in range(-flex, flex + 1):
             ret = ret_date + timedelta(days=r_offset)
             actual_trip = (ret - dep).days
             if 12 <= actual_trip <= 16:
-                combos.append((dep.isoformat(), ret.isoformat()))
+                combo = (dep.isoformat(), ret.isoformat())
+                if combo not in combos:
+                    combos.append(combo)
+
+    if max_combos:
+        combos = combos[:max_combos]
     return combos
 
 
-def parse_duration(iso_duration):
-    """Parse ISO 8601 duration like PT12H30M to minutes."""
-    if not iso_duration:
-        return None
-    total = 0
-    iso_duration = iso_duration.replace("PT", "").replace("P", "")
-    if "D" in iso_duration:
-        parts = iso_duration.split("D")
-        total += int(parts[0]) * 1440
-        iso_duration = parts[1] if len(parts) > 1 else ""
-    if "H" in iso_duration:
-        parts = iso_duration.split("H")
-        total += int(parts[0]) * 60
-        iso_duration = parts[1] if len(parts) > 1 else ""
-    if "M" in iso_duration:
-        total += int(iso_duration.replace("M", ""))
-    return total if total > 0 else None
+# ─── SerpAPI Google Flights Source ────────────────────────────────
 
-
-# ─── Kiwi.com Tequila API Source ─────────────────────────────────
-
-class KiwiSource:
+class GoogleFlightsSource:
     """
-    Kiwi.com Tequila API - free tier with generous limits.
-    Register at: https://tequila.kiwi.com/
+    Searches Google Flights via SerpAPI.
+    Free tier: 100 searches/month at https://serpapi.com
     """
-
-    BASE_URL = "https://api.tequila.kiwi.com"
 
     def __init__(self):
-        self.api_key = os.environ.get("KIWI_API_KEY", "")
+        self.api_key = os.environ.get("SERPAPI_KEY", "")
+        self.calls_made = 0
 
     @property
     def available(self):
         return bool(self.api_key)
 
     def search_flights(self, config, dep_date, ret_date):
-        origin_airports = config["origin_airports"].replace(",", " ")
-        dest_airports = config["destination_airports"].replace(",", " ")
-        ret_origins = config["return_origin_airports"].replace(",", " ")
-        ret_dests = config["return_destination_airports"].replace(",", " ")
+        """Search outbound and inbound flights and combine into offers."""
+        origin_airports = [a.strip() for a in config["origin_airports"].split(",")]
+        dest_airports = [a.strip() for a in config["destination_airports"].split(",")]
+        ret_origins = [a.strip() for a in config["return_origin_airports"].split(",")]
+        ret_dests = [a.strip() for a in config["return_destination_airports"].split(",")]
         passengers = config.get("passengers", 4)
         max_stops = config.get("max_stops", 1)
 
-        headers = {"apikey": self.api_key}
+        # Use primary airports to minimize API calls
+        # GRU is the main international airport in São Paulo
+        primary_origin = origin_airports[0]  # GRU
+        primary_dest = dest_airports[0]      # CDG
+        primary_ret_origin = ret_origins[0]  # FCO
+        primary_ret_dest = ret_dests[0] if ret_dests else primary_origin  # GRU
 
-        # Kiwi supports multi-city natively via /v2/search
-        # We search outbound and inbound separately for flexibility
-        outbound_results = self._search_oneway(
-            origin_airports, dest_airports, dep_date, passengers, max_stops, headers
+        # Search outbound: São Paulo → Paris
+        outbound = self._search_oneway(
+            primary_origin, primary_dest, dep_date,
+            passengers, max_stops
         )
-        inbound_results = self._search_oneway(
-            ret_origins, ret_dests, dep_date_str=ret_date,
-            passengers=passengers, max_stops=max_stops, headers=headers
-        )
+        add_log("DEBUG", f"Google Flights ida: {len(outbound)} resultados ({primary_origin}→{primary_dest} {dep_date})")
 
+        # Search inbound: Roma → São Paulo
+        inbound = self._search_oneway(
+            primary_ret_origin, primary_ret_dest, ret_date,
+            passengers, max_stops
+        )
+        add_log("DEBUG", f"Google Flights volta: {len(inbound)} resultados ({primary_ret_origin}→{primary_ret_dest} {ret_date})")
+
+        # Combine outbound + inbound into complete offers
         offers = []
-        for out in outbound_results:
-            for inb in inbound_results:
+        for out in outbound:
+            for inb in inbound:
                 total_price = round(out["price"] + inb["price"], 2)
                 offer = {
                     "price_total": total_price,
                     "price_per_person": round(total_price / passengers, 2),
-                    "currency": out.get("currency", "BRL"),
+                    "currency": "BRL",
                     "outbound_date": out["date"],
                     "outbound_time": out.get("time"),
                     "outbound_arrival_date": out.get("arrival_date"),
@@ -194,205 +202,22 @@ class KiwiSource:
                     "inbound_duration_minutes": inb.get("duration"),
                     "inbound_airlines": inb.get("airlines"),
                     "operating_airline": out.get("airlines", ""),
-                    "seller": "Kiwi.com",
-                    "booking_url": out.get("booking_url", ""),
-                    "baggage_info": out.get("baggage"),
+                    "seller": "Google Flights",
+                    "booking_url": "",
+                    "baggage_info": None,
                     "fare_rules": None,
-                    "source": "Kiwi.com Tequila API",
+                    "source": "Google Flights (SerpAPI)",
                 }
                 offer["confidence_level"] = get_confidence(
-                    offer["operating_airline"], "Kiwi.com"
+                    offer["operating_airline"], "Google Flights"
                 )
                 offer["offer_hash"] = generate_offer_hash(offer)
                 offers.append(offer)
 
         return offers
 
-    def _search_oneway(self, fly_from, fly_to, dep_date_str, passengers,
-                       max_stops, headers):
-        # Kiwi uses DD/MM/YYYY format
-        dep_date = date.fromisoformat(dep_date_str)
-        date_fmt = dep_date.strftime("%d/%m/%Y")
-
-        params = {
-            "fly_from": fly_from,
-            "fly_to": fly_to,
-            "date_from": date_fmt,
-            "date_to": date_fmt,
-            "adults": passengers,
-            "selected_cabins": "M",  # Economy
-            "curr": "BRL",
-            "locale": "pt",
-            "max_stopovers": max_stops,
-            "limit": 20,
-            "sort": "price",
-            "one_for_city": 0,
-            "flight_type": "oneway",
-        }
-
-        try:
-            resp = requests.get(
-                f"{self.BASE_URL}/v2/search",
-                headers=headers, params=params, timeout=60,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.exceptions.HTTPError as e:
-            logger.warning(f"Kiwi API error: {e}")
-            return []
-
-        results = []
-        for item in data.get("data", []):
-            routes = item.get("route", [])
-            if not routes:
-                continue
-
-            stops = len(routes) - 1
-            if stops > max_stops:
-                continue
-
-            # Check connections for US airports
-            connections = []
-            for r in routes[:-1]:
-                conn_code = r.get("flyTo", "")
-                connections.append(conn_code)
-
-            conn_str = ",".join(connections)
-            if has_us_connection(conn_str):
-                continue
-
-            first_route = routes[0]
-            last_route = routes[-1]
-
-            dep_utc = item.get("local_departure", "")
-            arr_utc = item.get("local_arrival", "")
-
-            airlines = list({r.get("airline", "") for r in routes})
-            airlines = [a for a in airlines if a]
-
-            # Price from Kiwi is total for all passengers
-            price = float(item.get("price", 0))
-
-            duration_sec = item.get("duration", {})
-            if isinstance(duration_sec, dict):
-                dur_total = duration_sec.get("total", 0)
-            else:
-                dur_total = duration_sec
-            duration_min = dur_total // 60 if dur_total else None
-
-            # Baggage info
-            baggage = None
-            bags_price = item.get("bags_price", {})
-            baglimit = item.get("baglimit", {})
-            if baglimit:
-                hand = baglimit.get("hand_width") is not None
-                hold_qty = baglimit.get("hold_dimensions_sum", 0)
-                if bags_price and "1" in bags_price:
-                    baggage = f"Despachada: +R${bags_price['1']:.0f}"
-                elif hold_qty:
-                    baggage = "Bagagem de mão incluída"
-
-            # Deep link for booking
-            booking_url = item.get("deep_link", "")
-
-            results.append({
-                "origin": first_route.get("flyFrom", ""),
-                "destination": last_route.get("flyTo", ""),
-                "date": dep_utc[:10] if dep_utc else dep_date_str,
-                "time": dep_utc[11:16] if len(dep_utc) > 11 else None,
-                "arrival_date": arr_utc[:10] if arr_utc else None,
-                "arrival_time": arr_utc[11:16] if len(arr_utc) > 11 else None,
-                "price": price,
-                "currency": item.get("currency", "BRL") if item.get("currency") else "BRL",
-                "stops": stops,
-                "connections": conn_str if connections else None,
-                "duration": duration_min,
-                "airlines": ",".join(airlines),
-                "baggage": baggage,
-                "booking_url": booking_url,
-            })
-
-        return results
-
-
-# ─── SerpAPI Google Flights Source ────────────────────────────────
-
-class SerpAPISource:
-    def __init__(self):
-        self.api_key = os.environ.get("SERPAPI_KEY", "")
-
-    @property
-    def available(self):
-        return bool(self.api_key)
-
-    def search_flights(self, config, dep_date, ret_date):
-        origin_airports = [a.strip() for a in config["origin_airports"].split(",")]
-        dest_airports = [a.strip() for a in config["destination_airports"].split(",")]
-        ret_origins = [a.strip() for a in config["return_origin_airports"].split(",")]
-        passengers = config.get("passengers", 4)
-        offers = []
-
-        # SerpAPI Google Flights - limit to main airports to conserve API calls
-        for orig in origin_airports[:1]:
-            for dest in dest_airports[:1]:
-                try:
-                    outbound = self._search(orig, dest, dep_date, passengers, config)
-                except Exception as e:
-                    logger.warning(f"SerpAPI outbound {orig}->{dest}: {e}")
-                    outbound = []
-
-            for ret_orig in ret_origins[:1]:
-                for ret_dest in origin_airports[:1]:
-                    try:
-                        inbound = self._search(
-                            ret_orig, ret_dest, ret_date, passengers, config
-                        )
-                    except Exception as e:
-                        logger.warning(f"SerpAPI inbound {ret_orig}->{ret_dest}: {e}")
-                        inbound = []
-
-                    for out in outbound:
-                        for inb in inbound:
-                            total_price = round(out["price"] + inb["price"], 2)
-                            offer = {
-                                "price_total": total_price,
-                                "price_per_person": round(total_price / passengers, 2),
-                                "currency": "BRL",
-                                "outbound_date": out["date"],
-                                "outbound_time": out.get("time"),
-                                "outbound_arrival_date": out.get("arrival_date"),
-                                "outbound_arrival_time": out.get("arrival_time"),
-                                "outbound_origin": out["origin"],
-                                "outbound_destination": out["destination"],
-                                "outbound_stops": out.get("stops", 0),
-                                "outbound_connections": out.get("connections"),
-                                "outbound_duration_minutes": out.get("duration"),
-                                "outbound_airlines": out.get("airlines"),
-                                "inbound_date": inb["date"],
-                                "inbound_time": inb.get("time"),
-                                "inbound_arrival_date": inb.get("arrival_date"),
-                                "inbound_arrival_time": inb.get("arrival_time"),
-                                "inbound_origin": inb["origin"],
-                                "inbound_destination": inb["destination"],
-                                "inbound_stops": inb.get("stops", 0),
-                                "inbound_connections": inb.get("connections"),
-                                "inbound_duration_minutes": inb.get("duration"),
-                                "inbound_airlines": inb.get("airlines"),
-                                "operating_airline": out.get("airlines", ""),
-                                "seller": "Google Flights",
-                                "booking_url": out.get("booking_url", ""),
-                                "baggage_info": None,
-                                "fare_rules": None,
-                                "source": "Google Flights (SerpAPI)",
-                            }
-                            offer["confidence_level"] = get_confidence(
-                                offer["operating_airline"], "Google Flights"
-                            )
-                            offer["offer_hash"] = generate_offer_hash(offer)
-                            offers.append(offer)
-        return offers
-
-    def _search(self, origin, destination, dep_date, passengers, config):
+    def _search_oneway(self, origin, destination, dep_date, passengers, max_stops):
+        """Execute a single one-way search on Google Flights."""
         params = {
             "engine": "google_flights",
             "departure_id": origin,
@@ -401,32 +226,52 @@ class SerpAPISource:
             "type": "2",  # One way
             "adults": passengers,
             "travel_class": "1",  # Economy
-            "stops": "1",  # Up to 1 stop
             "currency": "BRL",
             "hl": "pt",
             "gl": "br",
             "api_key": self.api_key,
         }
-        resp = requests.get(
-            "https://serpapi.com/search", params=params, timeout=60
-        )
-        resp.raise_for_status()
-        data = resp.json()
+
+        # Set stops filter
+        if max_stops == 0:
+            params["stops"] = "0"  # Non-stop only
+        elif max_stops == 1:
+            params["stops"] = "1"  # Up to 1 stop
+
+        try:
+            resp = requests.get(
+                "https://serpapi.com/search",
+                params=params, timeout=60,
+            )
+            self.calls_made += 1
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"SerpAPI request failed: {e}")
+            return []
+
+        # Check for API errors
+        if "error" in data:
+            logger.error(f"SerpAPI error: {data['error']}")
+            return []
 
         results = []
-        for flight_group in data.get("best_flights", []) + data.get("other_flights", []):
+        all_flights = data.get("best_flights", []) + data.get("other_flights", [])
+
+        for flight_group in all_flights:
             flights = flight_group.get("flights", [])
             if not flights:
                 continue
 
             stops = len(flights) - 1
-            if stops > config.get("max_stops", 1):
+            if stops > max_stops:
                 continue
 
+            # Extract connection airports
             connections = []
             for f in flights[:-1]:
-                arr = f.get("arrival_airport", {}).get("id", "")
-                connections.append(arr)
+                arr_id = f.get("arrival_airport", {}).get("id", "")
+                connections.append(arr_id)
 
             conn_str = ",".join(connections)
             if has_us_connection(conn_str):
@@ -437,22 +282,37 @@ class SerpAPISource:
             dep_airport = first.get("departure_airport", {})
             arr_airport = last.get("arrival_airport", {})
 
-            airlines = list({f.get("airline", "") for f in flights})
-            airlines = [a for a in airlines if a]
+            # Airlines
+            airlines_set = set()
+            for f in flights:
+                airline_name = f.get("airline", "")
+                if airline_name:
+                    airlines_set.add(airline_name)
+            airlines = sorted(airlines_set)
 
             price = flight_group.get("price", 0)
             duration = flight_group.get("total_duration", 0)
 
-            dep_time_raw = dep_airport.get("time", "")
-            arr_time_raw = arr_airport.get("time", "")
+            dep_time = dep_airport.get("time", "")
+            arr_time = arr_airport.get("time", "")
+
+            # Determine arrival date
+            # Google Flights may show "+1" for next day arrivals
+            arr_date_str = dep_date
+            if last.get("arrival_airport", {}).get("time"):
+                # If flight has overnight info, we can try to extract it
+                overnight = flight_group.get("overnight", False)
+                if overnight or (arr_time and dep_time and arr_time < dep_time and stops == 0):
+                    dep_d = date.fromisoformat(dep_date)
+                    arr_date_str = (dep_d + timedelta(days=1)).isoformat()
 
             results.append({
                 "origin": dep_airport.get("id", origin),
                 "destination": arr_airport.get("id", destination),
                 "date": dep_date,
-                "time": dep_time_raw,
-                "arrival_date": dep_date,
-                "arrival_time": arr_time_raw,
+                "time": dep_time,
+                "arrival_date": arr_date_str,
+                "arrival_time": arr_time,
                 "price": float(price) if price else 0,
                 "stops": stops,
                 "connections": conn_str if connections else None,
@@ -465,8 +325,14 @@ class SerpAPISource:
 
 # ─── Main Agent Runner ───────────────────────────────────────────
 
-def run_search():
-    """Execute the full flight search pipeline."""
+def run_search(is_manual=False):
+    """
+    Execute the full flight search pipeline.
+
+    Args:
+        is_manual: If True, searches more date combos (manual trigger).
+                   If False, uses fewer combos to conserve API calls (daily auto).
+    """
     add_log("INFO", "Iniciando busca de voos...")
     config = get_active_config()
     if not config:
@@ -478,51 +344,39 @@ def run_search():
     sources_used = []
     errors = []
 
-    # Initialize sources
-    kiwi = KiwiSource()
-    serpapi = SerpAPISource()
+    source = GoogleFlightsSource()
+
+    if not source.available:
+        add_log("WARNING",
+                "SERPAPI_KEY não configurada. Configure a variável de ambiente "
+                "com sua chave do SerpAPI (https://serpapi.com).")
+        finish_search_run(run_id, "error", 0, "", "SERPAPI_KEY não configurada")
+        return 0
 
     # Generate date combinations
-    date_combos = generate_date_combinations(config)
-    if not date_combos:
-        date_combos = [(config["departure_date"], config["return_date"])]
+    # Daily auto: 2 combos (4 API calls) to conserve quota
+    # Manual: up to 5 combos (10 API calls) for broader coverage
+    max_combos = 5 if is_manual else 2
+    date_combos = generate_date_combinations(config, max_combos=max_combos)
 
-    add_log("INFO", f"Testando {len(date_combos)} combinações de datas")
-
-    # Limit combos to avoid excessive API calls
-    date_combos = date_combos[:10]
+    add_log("INFO", f"Buscando {len(date_combos)} combinação(ões) de datas "
+            f"({'busca manual' if is_manual else 'busca automática'})")
 
     for dep_date, ret_date in date_combos:
-        # Kiwi.com Tequila
-        if kiwi.available:
-            try:
-                offers = kiwi.search_flights(config, dep_date, ret_date)
-                all_offers.extend(offers)
-                if "Kiwi.com" not in sources_used:
-                    sources_used.append("Kiwi.com")
-                add_log("INFO", f"Kiwi.com: {len(offers)} ofertas para {dep_date}/{ret_date}")
-            except Exception as e:
-                err = f"Kiwi.com error ({dep_date}): {str(e)}"
-                errors.append(err)
-                add_log("ERROR", err)
+        try:
+            offers = source.search_flights(config, dep_date, ret_date)
+            all_offers.extend(offers)
+            if "Google Flights" not in sources_used:
+                sources_used.append("Google Flights")
+            add_log("INFO",
+                    f"Google Flights: {len(offers)} ofertas para "
+                    f"{dep_date} / {ret_date}")
+        except Exception as e:
+            err = f"Erro na busca ({dep_date}/{ret_date}): {str(e)}"
+            errors.append(err)
+            add_log("ERROR", err)
 
-        # SerpAPI
-        if serpapi.available:
-            try:
-                offers = serpapi.search_flights(config, dep_date, ret_date)
-                all_offers.extend(offers)
-                if "SerpAPI" not in sources_used:
-                    sources_used.append("SerpAPI")
-                add_log("INFO", f"SerpAPI: {len(offers)} ofertas para {dep_date}/{ret_date}")
-            except Exception as e:
-                err = f"SerpAPI error ({dep_date}): {str(e)}"
-                errors.append(err)
-                add_log("ERROR", err)
-
-    if not sources_used:
-        add_log("WARNING",
-                "Nenhuma fonte de dados configurada. Configure KIWI_API_KEY "
-                "ou SERPAPI_KEY nas variáveis de ambiente.")
+    add_log("INFO", f"Total de chamadas à API: {source.calls_made}")
 
     # Deduplicate
     seen = set()
@@ -540,7 +394,6 @@ def run_search():
     if unique_offers:
         unique_offers[0].setdefault("badges", []).append("Mais Barata")
 
-        # Best cost-benefit (price / confidence / duration)
         def cost_benefit_score(o):
             conf_score = {"Alto": 1, "Médio": 2, "Baixo": 3}.get(
                 o.get("confidence_level", "Médio"), 2
@@ -554,7 +407,6 @@ def run_search():
         best_cb = min(unique_offers, key=cost_benefit_score)
         best_cb.setdefault("badges", []).append("Melhor Custo-Benefício")
 
-        # Shortest travel time
         def total_duration(o):
             return (
                 (o.get("outbound_duration_minutes") or 9999)
@@ -564,7 +416,6 @@ def run_search():
         shortest = min(unique_offers, key=total_duration)
         shortest.setdefault("badges", []).append("Menor Tempo de Viagem")
 
-        # Most reliable
         high_conf = [o for o in unique_offers if o.get("confidence_level") == "Alto"]
         if high_conf:
             high_conf[0].setdefault("badges", []).append("Mais Confiável")
@@ -576,13 +427,13 @@ def run_search():
         except Exception as e:
             add_log("ERROR", f"Erro ao salvar oferta: {e}")
 
-    status = "completed" if unique_offers or sources_used else "completed_empty"
+    status = "completed" if unique_offers else "completed_empty"
     finish_search_run(
         run_id, status, len(unique_offers),
         ",".join(sources_used),
         "; ".join(errors) if errors else None,
     )
     add_log("INFO",
-            f"Busca finalizada: {len(unique_offers)} ofertas únicas de "
-            f"{len(sources_used)} fonte(s)")
+            f"Busca finalizada: {len(unique_offers)} ofertas únicas. "
+            f"API calls: {source.calls_made}")
     return len(unique_offers)

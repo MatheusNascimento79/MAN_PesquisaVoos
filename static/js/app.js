@@ -114,7 +114,7 @@ function renderOffers(data) {
         container.innerHTML = `
             <div class="empty-state">
                 <h3>Nenhuma oferta encontrada</h3>
-                <p>Configure as chaves de API (Kiwi.com ou SerpAPI) e clique em "Atualizar" para buscar voos.</p>
+                <p>Configure a chave SERPAPI_KEY e clique em "Atualizar" para buscar voos.</p>
                 <p style="margin-top:0.5rem;font-size:0.8rem;color:var(--text-secondary)">
                     Consulte o README para instruções de configuração.
                 </p>

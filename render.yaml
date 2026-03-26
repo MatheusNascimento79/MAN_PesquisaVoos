@@ -8,8 +8,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.0"
-      - key: KIWI_API_KEY
-        sync: false
       - key: SERPAPI_KEY
         sync: false
       - key: SECRET_KEY

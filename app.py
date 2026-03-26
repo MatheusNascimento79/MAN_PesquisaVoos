@@ -43,7 +43,7 @@ def scheduled_search():
             return
         with _search_lock:
             try:
-                run_search()
+                run_search(is_manual=False)
             except Exception as e:
                 logger.error(f"Scheduled search failed: {e}")
 
@@ -100,7 +100,7 @@ def api_trigger_search():
     def _run():
         with app.app_context():
             with _search_lock:
-                run_search()
+                run_search(is_manual=True)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()

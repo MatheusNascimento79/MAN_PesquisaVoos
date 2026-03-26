@@ -23,12 +23,11 @@ Sistema automatizado de monitoramento de preços de passagens aéreas para viage
                      │  (diário 6h) │
                      └──────┬───────┘
                             │
-              ┌─────────────┼─────────────┐
-              ▼             ▼             ▼
-        ┌──────────┐ ┌──────────┐  (extensível)
-        │ Amadeus  │ │ SerpAPI  │
-        │   API    │ │ G.Flights│
-        └──────────┘ └──────────┘
+                            ▼
+                     ┌──────────────┐
+                     │   SerpAPI    │
+                     │ Google Flights│
+                     └──────────────┘
 ```
 
 ## Setup Local
@@ -45,7 +44,7 @@ pip install -r requirements.txt
 
 # 4. Configurar variáveis de ambiente
 cp .env.example .env
-# Edite .env com suas chaves de API
+# Edite .env com sua chave do SerpAPI
 
 # 5. Rodar
 python app.py
@@ -53,25 +52,28 @@ python app.py
 
 Acesse: http://localhost:5000
 
-## Fontes de Dados (APIs)
+## Fonte de Dados: SerpAPI (Google Flights)
 
-### Kiwi.com Tequila API (Recomendada)
-1. Acesse https://tequila.kiwi.com e crie uma conta gratuita
-2. Crie uma **Solution** e copie sua **API Key**
-3. Configure `KIWI_API_KEY` nas variáveis de ambiente
-4. Gratuita, sem limite rígido de chamadas para uso pessoal
+O sistema usa o **SerpAPI** para buscar dados do Google Flights.
 
-### SerpAPI - Google Flights (Opcional)
-1. Crie conta em https://serpapi.com (100 buscas/mês grátis)
-2. Copie sua API key
-3. Configure `SERPAPI_KEY`
+### Como obter a API Key (gratuita):
+1. Acesse https://serpapi.com e crie uma conta
+2. O plano gratuito oferece **100 buscas/mês**
+3. Copie sua API Key do dashboard
+4. Configure `SERPAPI_KEY` nas variáveis de ambiente
+
+### Consumo de API otimizado:
+- **Busca automática diária:** ~4 chamadas/dia (2 combos de datas × 2 trechos)
+- **Busca manual (botão):** ~10 chamadas (5 combos × 2 trechos)
+- **Estimativa mensal:** ~120-150 chamadas com uso moderado
+- O plano gratuito (100/mês) suporta bem o uso automático diário
 
 ## Deploy no Render (Gratuito)
 
 1. Faça push do código para o GitHub
 2. Acesse https://render.com e conecte seu repositório
 3. Crie um novo **Web Service** apontando para o repo
-4. Configure as variáveis de ambiente (KIWI_API_KEY e/ou SERPAPI_KEY)
+4. Configure a variável de ambiente `SERPAPI_KEY`
 5. O Render detectará o `render.yaml` automaticamente
 6. Deploy automático a cada push
 
@@ -104,12 +106,9 @@ Acesse: http://localhost:5000
 
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
-| `KIWI_API_KEY` | Sim* | API key do Kiwi.com Tequila |
-| `SERPAPI_KEY` | Não | API key do SerpAPI |
+| `SERPAPI_KEY` | Sim | API key do SerpAPI (Google Flights) |
 | `SECRET_KEY` | Não | Chave secreta Flask |
 | `SEARCH_HOUR` | Não | Hora da busca diária (padrão: 6) |
 | `ENABLE_SCHEDULER` | Não | Ativar agendamento (padrão: true) |
 | `DB_PATH` | Não | Caminho do banco SQLite |
 | `PORT` | Não | Porta do servidor (padrão: 5000) |
-
-*Pelo menos uma fonte (Kiwi.com ou SerpAPI) deve estar configurada.
